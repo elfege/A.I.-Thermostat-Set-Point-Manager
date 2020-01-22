@@ -164,7 +164,7 @@ def installed() {
     logging("Installed with settings: ${settings}")
 
     initialize()
-    state.db = createDb()
+    createDb()
 }
 def updated() {
 
@@ -185,9 +185,9 @@ def initialize(){
 
     subscribe(Thermostat, "heatingSetpoint", setPointHandler)
     subscribe(Thermostat, "coolingSetpoint", setPointHandler)
-    subscribe(Thermostat, "thermostatSetpoint", setPointHandler)
+    //subscribe(Thermostat, "thermostatSetpoint", setPointHandler)
 
-    subscribe(dimmer, "level", setPointHandler)
+    //subscribe(dimmer, "level", setPointHandler) // feedback loop here, do not uncomment this line for now
     subscribe(outdoor, "temperature", temperatureHandler)
     subscribe(humidity,  "humidity", humidityHandler)
 
@@ -222,12 +222,12 @@ def appButtonHandler(btn) {
         }
         else
         {
-            initialize()            
+            updated()            
             break
         }
         case "update":
         state.paused = false
-        initialize()
+        updated()
         break
         case "resetdb":state.confirm = true
         break
@@ -276,57 +276,80 @@ def setPointHandler(evt){
     {
         if(!state.paused)
         {
-            if(!state.learning)
+            if(Thermostat.currentValue("thermostatMode") != "auto")
             {
-                state.learning = true
-                def outsideTemp = outdoor.currentValue("temperature")
-                def humidity = humidity.currentValue("humidity")
-                log.info( "************learning new desired temperature: $evt.value with outside temp: $outsideTemp and humidity: $humidity")
-                def alldb = state.db
-                ref = [outsideTemp, humidity, evt.value]
+                logging("state.learning is $state.learning 5sf")
+                if(!state.learning)
+                {
+                    learning(true)
+                    logging("state.learning is $state.learning dfz")
+                    def outsideTemp = outdoor.currentValue("temperature")
+                    def humidity = humidity.currentValue("humidity")
+                    def alldb = state.db
+                    ref = [outsideTemp, humidity, evt.value]
+                    i = 0
+                    s = alldb.size()  // we have 7 db into which we need look for those values (outside temp, humidity), try each one until found
 
-                i = 0
-                s = alldb.size()  // we have 7 db into which we need look for those values (outside temp, humidity), try each one until found
-                logging("SEARCHING $ref within the data base:")
-                for(s!=0;i<s&&!state.paused;i++)
-                {                   
-                    int n = 1 // we start by adding +1 not +0
-                    int f = 15
+                    long safetyDelay = 600000
+                    long start = now() 
 
-                    for(f!=0;n<f&&!state.paused;n++)
-                    {
-                        def rec = alldb[i][0,1,2]
-                        //logging ("$rec --->")
+                    log.info( "***db size = $s *********learning new desired temperature: $evt.value with outside temp: $outsideTemp and humidity: $humidity")
 
-                        boolean A = alldb[i][0] == outsideTemp && alldb[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
+                    for(s!=0;i<s;i++)
+                    {    
+                        log.info("$i")
+                        int n = 1 // we start by adding +1 not +0
+                        int f = 15
 
-                        // now we test for close values within an amplitude of +/- n for both outsideTemp and humidity
-                        boolean B = alldb[i][0] == outsideTemp && alldb[i][1] == humidity + n
-                        boolean C = alldb[i][0] == outsideTemp && alldb[i][1] == humidity - n
-                        boolean D = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity + n
-                        boolean E = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity - n
-                        boolean F = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity
-                        boolean G = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity
-                        boolean H = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity - n
-                        boolean I = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity + n
+                        for(f!=0;n<f&&!state.paused;n++)
+                        {                            
+                            def rec = alldb[i][0,1,2]
+                            boolean A = alldb[i][0] == outsideTemp && alldb[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
 
-                        if(A||B||C||D||E||F||G||H||I)
+                            // now we test for close values within an amplitude of +/- n for both outsideTemp and humidity
+                            boolean B = alldb[i][0] == outsideTemp && alldb[i][1] == humidity + n
+                            boolean C = alldb[i][0] == outsideTemp && alldb[i][1] == humidity - n
+                            boolean D = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity + n
+                            boolean E = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity - n
+                            boolean F = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity
+                            boolean G = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity
+                            boolean H = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity - n
+                            boolean IA = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity + n
+
+                            if(A||B||C||D||E||F||G||H||IA)
+                            {
+                                alldb[i].remove(2)
+                                alldb[i] += evt.value 
+
+                                //pauseExecution(1)
+                                //def newRec = alldb[i][0,1,2]
+                                //logging("applied amplitude #$n replacing $rec with ${newRec}") 
+                                
+                            }
+                            if(now() - start > safetyDelay)
+                            {
+                                log.warn "setPointHandler() (inner loop) took more than $safetyDelay seconds to execute, BREAK"
+                                learning(false)
+                                return
+                            }
+                        }
+                        if(now() - start > safetyDelay)
                         {
-                            alldb[i].remove(2)
-                            alldb[i] += evt.value 
-
-                            pauseExecution(1)
-                            def newRec = alldb[i][0,1,2]
-                            logging("applied amplitude #$n replacing $rec with ${newRec}") 
+                            log.warn "setPointHandler() (outer loop) took more than $safetyDelay seconds to execute, BREAK"
+                            learning(false)
+                            return
                         }
                     }
+                    log.info "DONE"
                 }
-                log.info "DONE"
-                state.learning = false
+                else 
+                {
+                    log.warn "learning process already running"
+                }
             }
             else 
             {
-                log.warn "learning process already running"
+                log.info "Not learning, override due to 'auto' mode"
             }
         }
         else 
@@ -337,6 +360,20 @@ def setPointHandler(evt){
     else 
     {
         log.info "restricted mode"
+    }
+    learning(false)
+}
+def learning(value)
+{
+    state.learning = value
+    long start = now()
+    while(state.learning != value && start - now() < 10000)
+    {
+        log.info "."
+    }
+    if(start - now() >= 10000)
+    {
+        log.warn "FAILED TO UPDATE state.learning..."
     }
 }
 def temperatureHandler(evt)
@@ -452,6 +489,8 @@ def createDb()
 
     def db = []
     def insert = []
+    long start = now()
+    long timer = 120000
     for(s!=0;i<s;i++)
     {
         int a = 0
@@ -461,12 +500,22 @@ def createDb()
             if(h<100){h += 1}
             insert = [i,h,baseline] // create [[outside, humidity, setpoint]]
             db << insert
+            if(now() - start > timer)
+            {
+                log.warn "createDb() (inner loop) took more than $timer seconds to execute, BREAK"
+                return
+            }
+        }
+        if(now() - start > timer)
+        {
+            log.warn "createDb() (outer loop) took more than $timer seconds to execute, BREAK"
+            return
         }
     }
     log.debug "DONE! with  ${db.size()} entries and ${db.size()*3} sub-entries "
 
     //log.debug "db b = $db"
-
+    state.db = db
     return db
 }
 
