@@ -121,15 +121,6 @@ def pageConfig() {
             }
 
         }
-        section("")
-        {
-            input "showdata", "button", title: "Show the current data"
-            if(state.showdata)
-            {
-                paragraph "${showdata()}"
-            }
-        }
-
         section()
         {
             input "update", "button", title: "UPDATE"
@@ -155,6 +146,15 @@ def pageConfig() {
             {
                 state.enablelogging = false
                 log.warn "logging disabled"
+            }
+        }
+        
+        section("")
+        {
+            input "showdata", "bool", title: "Show the current data", submitOnChange:true
+            if(showdata)
+            {
+                paragraph "${state.db}"
             }
         }
     }
@@ -251,23 +251,6 @@ def appButtonHandler(btn) {
     }
 }
 
-def showdata(){
-    def alldb = alldb()
-    int s = alldb.size()
-    int i = 1
-    def result = ""
-    for(s!=0;i<s;i++)
-    {
-        def r = """<h3><b>DATABASE NUMBER $i: </h3></b>
-${alldb[i]}
-"""
-        result += r
-    }
-    return result
-}
-def cancelshowdata(){
-    state.showdata = false
-}
 def setPointHandler(evt){
 
     boolean restrictedMode = location.mode in restricted
@@ -285,46 +268,46 @@ def setPointHandler(evt){
                     logging("state.learning is $state.learning dfz")
                     def outsideTemp = outdoor.currentValue("temperature")
                     def humidity = humidity.currentValue("humidity")
-                    def alldb = state.db
+               
                     ref = [outsideTemp, humidity, evt.value]
                     i = 0
-                    s = alldb.size()  // we have 7 db into which we need look for those values (outside temp, humidity), try each one until found
+                    s = state.db.size()  // we have 7 db into which we need look for those values (outside temp, humidity), try each one until found
 
-                    long safetyDelay = 600000
+                    long safetyDelay = 1000000 // 16 minutes max
                     long start = now() 
 
                     log.info( "***db size = $s *********learning new desired temperature: $evt.value with outside temp: $outsideTemp and humidity: $humidity")
 
                     for(s!=0;i<s;i++)
                     {    
-                        log.info("$i")
+                        //log.info("$i")
                         int n = 1 // we start by adding +1 not +0
                         int f = 15
 
                         for(f!=0;n<f&&!state.paused;n++)
                         {                            
-                            def rec = alldb[i][0,1,2]
-                            boolean A = alldb[i][0] == outsideTemp && alldb[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
+                            def rec = state.db[i][0,1,2]
+                            boolean A = state.db[i][0] == outsideTemp && state.db[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
 
-                            // now we test for close values within an amplitude of +/- n for both outsideTemp and humidity
-                            boolean B = alldb[i][0] == outsideTemp && alldb[i][1] == humidity + n
-                            boolean C = alldb[i][0] == outsideTemp && alldb[i][1] == humidity - n
-                            boolean D = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity + n
-                            boolean E = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity - n
-                            boolean F = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity
-                            boolean G = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity
-                            boolean H = alldb[i][0] == outsideTemp + n && alldb[i][1] == humidity - n
-                            boolean IA = alldb[i][0] == outsideTemp - n && alldb[i][1] == humidity + n
+                            // now we test for surrounding values within an amplitude of +/- n for both outsideTemp and humidity
+                            boolean B = state.db[i][0] == outsideTemp && state.db[i][1] == humidity + n
+                            boolean C = state.db[i][0] == outsideTemp && state.db[i][1] == humidity - n
+                            boolean D = state.db[i][0] == outsideTemp + n && state.db[i][1] == humidity + n
+                            boolean E = state.db[i][0] == outsideTemp - n && state.db[i][1] == humidity - n
+                            boolean F = state.db[i][0] == outsideTemp + n && state.db[i][1] == humidity
+                            boolean G = state.db[i][0] == outsideTemp - n && state.db[i][1] == humidity
+                            boolean H = state.db[i][0] == outsideTemp + n && state.db[i][1] == humidity - n
+                            boolean IA = state.db[i][0] == outsideTemp - n && state.db[i][1] == humidity + n
 
                             if(A||B||C||D||E||F||G||H||IA)
                             {
-                                alldb[i].remove(2)
-                                alldb[i] += evt.value 
+                                state.db[i].remove(2)
+                                state.db[i] += evt.value 
 
                                 //pauseExecution(1)
-                                //def newRec = alldb[i][0,1,2]
+                                //def newRec = state.db[i][0,1,2]
                                 //logging("applied amplitude #$n replacing $rec with ${newRec}") 
-                                
+
                             }
                             if(now() - start > safetyDelay)
                             {
@@ -340,7 +323,7 @@ def setPointHandler(evt){
                             return
                         }
                     }
-                    log.info "DONE"
+                    log.info "DONE LEARNING"
                 }
                 else 
                 {
@@ -401,9 +384,9 @@ def retrieve()
 {
     def outsideTemp = outdoor.currentValue("temperature")
     def humidity = humidity.currentValue("humidity")
-    def alldb = state.db
+    
     def i = 0
-    def s = alldb.size() 
+    def s = state.db.size() 
     boolean found = false
 
 
@@ -414,11 +397,11 @@ def retrieve()
     for(s!=0;i<s&&!found;i++)
     {
 
-        if(alldb[i][0,1] == ref[0,1])
+        if(state.db[i][0,1] == ref[0,1])
         {
             found = true
-            log.info("FOUND A MATCH at index $i ======== ${ref[0,1]} == ${alldb[i][0,1]}----------")
-            desired = alldb[i][2]
+            log.info("FOUND A MATCH at index $i for outside temperature: $outsideTemp ||| reference: ${ref[0,1]} matches:${state.db[i][0,1,2]}")
+            desired = state.db[i][2]
 
             break;
         }
@@ -443,7 +426,6 @@ def retrieve()
 }
 def setBaseLine()
 {
-    def alldb = state.db
     if(state.db == null)
     {
         log.warn "DATA BASE NOT YET CREATED. PLEASE FINISH INSTALLING THIS APP BEFORE HITTING THAT BUTTON"
@@ -453,14 +435,14 @@ def setBaseLine()
     log.trace "DB OVERWRITE STARTED..."  
 
     i = 0
-    s = alldb.size() 
+    s = state.db.size() 
     def toSave = state.valuestosave
 
     logging("values to save: $toSave")
 
     for(s!=0;i<s&&!state.paused;i++)
     {        
-        def ref = alldb[i][2] 
+        def ref = state.db[i][2] 
         def dataFound = toSave.findAll{it == ref.toInteger()}
         boolean skip = ref.toInteger() in dataFound
         if(skip)
@@ -469,20 +451,21 @@ def setBaseLine()
         }
         else 
         {
-            logging(".")
-            alldb[i].remove(2)
-            alldb[i] += baseline
+            //logging(".")
+            state.db[i].remove(2)
+            state.db[i] += baseline
         }
     }
+    
+    
     logging("BASE LINE UPDATE DONE!")
 
 }
 def createDb()
 {
-    log.info "CREATING DATABASE... this will happen only at first install and may take some ressources for a little while..."
+    log.info "CREATING DATABASE... this may take some ressources for a little while..."
 
     int h = 10 // minimum humidity value
-
     int sh = 100-h // humidity goes from 10 to 100%
     int i = -50 // minimum outside temp
     int s = 120 + Math.abs(i) // max outside temp expected, beyond that... move to Mars... 
