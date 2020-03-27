@@ -350,6 +350,7 @@ def setPointHandler(evt){
     {
         log.info "restricted mode"
     }
+    eventFromApp = false
     state.lastEvent = now() 
 }
 def temperatureHandler(evt){ 
