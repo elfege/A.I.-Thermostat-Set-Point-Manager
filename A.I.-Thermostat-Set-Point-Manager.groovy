@@ -6,7 +6,6 @@ import groovy.json.JsonOutput
 @Field static boolean eventFromApp = false
 
 
-
 definition(
     name: "A.I. Thermostat Set Point Manager",
     namespace: "elfege",
@@ -39,27 +38,26 @@ It gets even smarter after an extended period of time (providing you don't reset
 preferences {
     page name: "pageConfig"
 }
-
 def pageConfig() {
 
-    /*if(state.paused)
-{
-log.debug "new app label: ${app.label}"
-while(app.label.contains(" (Paused) "))
-{
-app.updateLabel(app.label.minus("(Paused)" ))
-}
-app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
-}
-else if(app.label.contains("(Paused)"))
-{
-app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
-while(app.label.contains(" (Paused) "))       
-{
-app.updateLabel(app.label.minus("(Paused)" ))
-}
-log.debug "new app label: ${app.label}"
-}*/
+    if(state.paused)
+    {
+        log.debug "new app label: ${app.label}"
+        while(app.label.contains(" (Paused) "))
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
+    }
+    else if(app.label.contains("(Paused)"))
+    {
+        app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
+        while(app.label.contains(" (Paused) "))       
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        log.debug "new app label: ${app.label}"
+    }
 
 
     def pageProperties = [
@@ -92,7 +90,11 @@ log.debug "new app label: ${app.label}"
         section("Home Location Modes Management")
         {
             input "restricted", "mode", title: "Do not run this app when in these modes:", description:"select modes", multiple:true, required:false
-            input "baseMode", "mode", title: "Select all the modes you want this app to learn with (so it learns from different situations)", multiple: true, required: true
+            input "baseMode", "mode", title: "Select all the modes you want this app to learn with (so it learns from different situations)", multiple: true, required: true, submitOnChange:true
+            if(/*state.db.size() != baseMode.size() && */state.installed == true)
+            {
+                input "checkConsistency", "button", title:"Check Modes Data Consistency", submitOnChange:true
+            }
         }
         section([title:"Options"]) {
             label title:"Assign a name", required:false
@@ -135,6 +137,7 @@ log.debug "new app label: ${app.label}"
             {
                 input "update", "button", title: "UPDATE"
                 input "testdataretrieve", "button", title: "TEST DATA RETRIEVAL"
+
                 if(state.confirm)
                 {
                     def message = "CAREFULL! THIS WILL OVERWRITE ALL PREVIOUSLY LEARNED INPUTS!"
@@ -148,57 +151,20 @@ log.debug "new app label: ${app.label}"
                 paragraph "                                        ", width: 6
             }
             input "enablelogging", "bool", title:"Debug", defaultValue:false, submitOnChange:true
-
-        }
-
-        section("")
-        {
-            input "showdata", "bool", title: "Show the current data", submitOnChange:true
-
-            def db = state.db
-
-            if(db != null && showdata)
-            {
-
-                def MybaseMode = []
-                MybaseMode = baseMode.sort()
-                //baseMode.each {MybaseMode << "$it"}
-                input "dbNumber", "enum", options: baseMode.sort(), title: "Select which home location mode Database you want to see", submitOnChange:true
-                def selected = db.find{it.key == dbNumber}?.value
-                log.info """
-db = $db
-selected = $selected
-"""
-                if(dbNumber && db.size() > 1 && selected)
-                {
-                    def truncatedSelection = selected[0,1,2]
-                    paragraph "Here is a sample of your database: ${truncatedSelection}"
-                }
-                else if(db.size() < 1)
-                {
-                    paragraph "No value yet. Finish installing or reset database first"
-                }
-                else if(dbNumber)
-                {
-                    paragraph "Something went wrong... contact developper"
-                }
-            }
         }
     }
 }
-
 def installed() {
     logging("Installed with settings: ${settings}")
-    state.installed = true
 
     initialize()
     createDb()
+    state.installed = true
+
 }
 def updated() {
-    if(!state.installed)
-    {
-        installed()
-    }
+    state.installed = true
+
     if(enablelogging)
     {
         state.enablelogging = true
@@ -247,7 +213,15 @@ def initialize(){
     subscribe(outdoor, "temperature", temperatureHandler)
     subscribe(humidity,  "humidity", humidityHandler)
 
-    //createDb() // for development only, comment out if not developing app or db will be reset after every update
+    if(!state.installed)
+    {
+        createDb() // for development only, comment out if not developing app or db will be reset after every update
+    }
+
+    if(state.installed)
+    {
+        checkConsistency()
+    }
 
     log.info "Initialization complete!"
 
@@ -303,30 +277,31 @@ def appButtonHandler(btn) {
         case "testdataretrieve":
         retrieve()
         break
+        case "checkConsistency":
+        checkConsistency()
+        break
 
     }
 }
-
 def setPointHandler(evt){
 
+    log.info "$evt.device $evt.name is now $evt.value"
 
     boolean restrictedMode = location.mode in restricted
 
     if(!restrictedMode)
     {
-        if(eventFromApp || (evt.device == Thermostat && dimmer.currentValue("level") == evt.value))
+        if(eventFromApp)
         {
             log.warn "Event generated by this app, not learning from this"
             eventFromApp = false
             return
         }
 
-        log.info "$evt.name is now $evt.value"
         def thermMode = Thermostat.currentValue("thermostatMode")
         if(state.lastMode != evt.name && evt.name != "level")
         {
-
-            log.info "ignoring this event state.lastMode = $state.lastMode && thermMode = $thermMode" // preventing coolingsetpoint and heatingsepoint from mixing each other
+            log.info "ignoring this event state.lastMode = $state.lastMode && thermMode = $thermMode" // preventing coolingsetpoint and heatingsepoint from messing each other up
             return 
         }
         if(thermMode == "heat")
@@ -354,10 +329,7 @@ def setPointHandler(evt){
             {
                 if(Thermostat.currentValue("thermostatMode") != "auto")
                 {
-                    learning = true
-                    state.evtVal = evt.value
-                    pauseExecution(1000)
-                    runIn(3, learn) // "time" for state to be written into HE's DB
+                    learn(evt.value) 
                 }
                 else 
                 {
@@ -380,86 +352,6 @@ def setPointHandler(evt){
     }
     state.lastEvent = now() 
 }
-def learn(){
-    def outsideTemp = outdoor.currentValue("temperature")
-    def humidity = humidity.currentValue("humidity")
-    def newSP = state.evtVal
-
-    ref = [outsideTemp, humidity, newSP]
-  
-   
-
-
-    long safetyDelay = 300000
-    long start = now() 
-    long counter = now()
-
-    learning = false
-
-    def a = 0
-    def sa = state.db.size() 
-     log.info( " ****** Learning new desired temperature: $newSP with outside temp: $outsideTemp and humidity: $humidity")
-
-    for(sa!=0;a<sa;a++)
-    {      
-        
-        def dbX = state.db.find{it.key == baseMode[a]}?.value
-        def i = 0
-        def s = dbX.size()
-        log.trace "Updating database for ${baseMode[a]} mode with ${dbX.size()} entries to check"
-
-        for(s!=0;i<s;i++)
-        {    
-            learning = true
-
-            //log.info("$i")
-            int n = 1 // we start by adding +1 not +0
-            int f = 8 // amplitude
-
-            for(f!=0;n<f;n++)
-            {                            
-                boolean A = dbX[i][0] == outsideTemp && dbX[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
-
-                // now we test for surrounding values within an amplitude of +/- n for both outsideTemp and humidity
-                boolean B = dbX[i][0] == outsideTemp && dbX[i][1] == humidity + n
-                boolean C = dbX[i][0] == outsideTemp && dbX[i][1] == humidity - n
-                boolean D = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity + n
-                boolean E = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity - n
-                boolean F = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity
-                boolean G = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity
-                boolean H = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity - n
-                boolean IA = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity + n
-
-                if(A||B||C||D||E||F||G||H||IA)
-                {
-                    dbX[i].remove(2)
-                    dbX[i] += newSP 
-                }
-            }
-            
-            
-            if(now() - start > safetyDelay)
-            {
-                log.warn "setPointHandler() took more than $safetyDelay seconds to execute, BREAK"
-                return
-            }
-            if(now() - counter > 10000)
-            {
-                log.warn "Still processing, please be patient... index #$i out of $s"
-                counter = now()
-            }
-            
-            state.db."${baseMode[a]}" = dbX
-        }
-    }
-    learning = false
-
-    log.info "DONE LEARNING. The operation took ${(now() - start)/1000} seconds (${(now() - start)/1000/60} minutes)"
-    //updated() // re-subscribe to events 
-
-}
-
-
 def temperatureHandler(evt){ 
     boolean restrictedMode = location.mode in restricted
 
@@ -482,14 +374,14 @@ def humidityHandler(evt){
 def retrieve(){
     if(!learning)
     {
+        checkConsistency() // check consistency
+
         def outsideTemp = outdoor.currentValue("temperature")
         def humidity = humidity.currentValue("humidity")
         boolean found = false
         // we want to find the item in db that contains this evt.value outside temp and current humidity so we can extrat index 2, that is the corresponding desired temp
         def ref = [outsideTemp, humidity] // values to look for
         def desired = null
-
-
         def a = 0
         def sa = state.db.size() 
 
@@ -499,20 +391,28 @@ def retrieve(){
             def dbX = state.db.find{it.key == baseMode[a]}?.value
             def i = 0
             def s = dbX.size()
-
-            for(s!=0;i<s&&!found;i++)
+            if(baseMode[a] == location.mode)
             {
-
-                if(dbX[i][0,1] == ref[0,1])
+                for(s!=0;i<s&&!found;i++)
                 {
-                    found = true
-                    log.info """
+
+                    if(dbX[i][0,1] == ref[0,1])
+                    {
+                        found = true
+                        log.info """
 FOUND A MATCH at index $i for outside temperature: $outsideTemp in ${baseMode[a]}'s data set 
 reference: ${ref[0,1]} matches:${dbX[i][0,1,2]} New value: ${dbX[i][2]}
+current mode = $location.mode
+modified data mode = ${baseMode[a]} (shoud be identical to current location mode)
 """
-                    desired = dbX[i][2]
-                    break;
+                        desired = dbX[i][2]
+                        break;
+                    }
                 }
+            }
+            else 
+            {
+                log.info "location not in ${baseMode[a]} mode"
             }
         }
         if(!found)
@@ -539,6 +439,8 @@ reference: ${ref[0,1]} matches:${dbX[i][0,1,2]} New value: ${dbX[i][2]}
     }
 }
 def setBaseLine(){
+    checkConsistency() // check consistency
+
     log.info "processing the data. Please, be patient, this can take several minutes and may temporarily slow down your hub"
     if(state.db == null)
     {
@@ -588,7 +490,7 @@ sa!=0 = ${sa!=0}
             }
             if(now() - start >= 500)
             {
-                log.warn "Updating database... currently at index #$i within $ii"
+                log.warn "Updating database... currently at index #$i within $a"
                 start = now()
             }
             if(now() - counter >= timer)
@@ -659,15 +561,157 @@ def createDb(){
     log.debug "ALL DATA SUCCESSFULY GENERATED"
 
 }
+def checkConsistency(){
+    log.trace "VERIFYING DATABASE CONSISTENCY..."
 
-def logging(message)
-{
+    def x = baseMode.size()
+    def dbX = state.db.find{it.key == baseMode[0]}?.value // take the first key's value as baseline
+
+    log.info """
+
+ALL location modes are : $location.modes
+Modes managed by this app are: $baseMode
+
+"""
+    logging"""
+state.db.size() < baseMode.size() ? ${state.db?.size() < baseMode?.size()}
+state.db.size() > baseMode.size() ? ${state.db?.size() > baseMode?.size()}
+"""
+
+
+    if(state.db.size() < baseMode.size())
+    {
+        log.warn "Main database is too small, updating now"
+        def s = baseMode.size()
+        def i = 0
+        for(s!=0;i<s;i++)
+        {
+            def inDb = state.db.find{it.key == baseMode[i]}?.key // if null, then it's a missing value that needs to be implemented into the db
+            //log.debug "inDb = ${inDb}"
+            boolean missing = inDb == null
+            //return
+            if(missing)
+            {
+                log.info "updating database with ${baseMode[i]} mode as a new key"
+                state.db."${baseMode[i]}" = dbX
+            }
+            else
+            {
+                log.info "$inDb is an existing key"
+            }  
+        }
+    }
+    else if(state.db.size() > baseMode.size())
+    {
+        log.warn "Some modes are no longer in use, updating now"
+        def s = location.modes.size()
+        def i = 0
+        for(s!=0;i<s;i++)
+        {
+            // if one of the hub's location modes is found in state.db but NOT in baseMode, then it needs to be deleted from state.db
+            boolean inDb = state.db.find{it.key == "${location.modes[i]}"}?.key
+            if(inDb) {log.debug "${location.modes[i]} is a key"}
+            boolean inBM = baseMode.find{it == "${location.modes[i]}"}
+            boolean noLongerInBaseMode = !inBM && inDb
+            log.warn "noLongerInBaseMode = $noLongerInBaseMode for (${location.modes[i]})"
+
+            if(noLongerInBaseMode)
+            {
+                log.info "deleteding ${location.modes[i]} from database"
+                def toremove = "${location.modes[i]}" // for some reason "state.db.remove(location.modes[i])" (even with brackets in string mode) doesn't remove the entry... "
+                state.db.remove(toremove.toString()) 
+            } 
+        }
+
+    }
+    else 
+    {
+        log.info "Database sizes are consistent"
+    }
+}
+def learn(newSP){
+    checkConsistency()
+
+    log.trace "NOW LEARNING"
+
+    def outsideTemp = outdoor.currentValue("temperature")
+    def humidity = humidity.currentValue("humidity")
+    def ref = [outsideTemp, humidity, newSP]
+    long safetyDelay = 300000
+    long start = now() 
+    long counter = now()
+    learning = false
+    def a = 0
+    def sa = state.db.size() 
+
+    log.info( " ****** Learning new desired temperature: $newSP with outside temp: $outsideTemp and humidity: $humidity")
+
+    for(sa!=0;a<sa;a++)
+    {      
+
+        def dbX = state.db.find{it.key == baseMode[a]}?.value
+        if(baseMode[a] == location.mode)
+        {
+            def i = 0
+            def s = dbX.size()
+            log.trace "Updating database for ${baseMode[a]} mode with ${dbX.size()} entries to check"
+
+            for(s!=0;i<s;i++)
+            {    
+                learning = true
+
+                int n = 1 // we start by adding +1 not +0
+                int f = 8 // amplitude
+
+                for(f!=0;n<f;n++)
+                {                            
+                    boolean A = dbX[i][0] == outsideTemp && dbX[i][1] == humidity // this will apply the new setpoint value to the current outsideTemp and humidity values
+
+                    // now we test for surrounding values within an amplitude of +/- n for both outsideTemp and humidity
+                    boolean B = dbX[i][0] == outsideTemp && dbX[i][1] == humidity + n
+                    boolean C = dbX[i][0] == outsideTemp && dbX[i][1] == humidity - n
+                    boolean D = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity + n
+                    boolean E = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity - n
+                    boolean F = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity
+                    boolean G = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity
+                    boolean H = dbX[i][0] == outsideTemp + n && dbX[i][1] == humidity - n
+                    boolean IA = dbX[i][0] == outsideTemp - n && dbX[i][1] == humidity + n
+
+                    if(A||B||C||D||E||F||G||H||IA)
+                    {
+                        dbX[i].remove(2)
+                        dbX[i] += newSP 
+                    }
+                }
+                if(now() - start > safetyDelay)
+                {
+                    log.warn "setPointHandler() took more than $safetyDelay seconds to execute, BREAK"
+                    return
+                }
+                if(now() - counter > 10000)
+                {
+                    log.warn "Still processing, please be patient... index #$i out of $s"
+                    counter = now()
+                }
+
+                state.db."${baseMode[a]}" = dbX
+            }
+        }
+        else {
+            log.info "location not in ${baseMode[a]} mode"
+        }
+    }
+    learning = false
+
+    log.info "LEARNING SUCCESSFUL! The operation took ${(now() - start)/1000} seconds)"
+}
+
+def logging(message){
     //state.enablelogging = true
     if(state.enablelogging) log.debug message
 
 }
-def disablelogging()
-{
+def disablelogging(){
     log.warn "debug logging disabled!" 
     state.enablelogging = false
 }
