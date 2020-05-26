@@ -2,8 +2,8 @@ import java.text.SimpleDateFormat
 import groovy.transform.Field
 import groovy.json.JsonOutput
 
-@Field static boolean learning = false
-@Field static boolean eventFromApp = false
+//@Field static boolean learning = false
+//@Field static boolean eventFromApp = false
 @Field static boolean installed = false
 
 
@@ -124,19 +124,18 @@ def pageConfig() {
         {
             if(state.installed)
             {
-                input "setbaseline", "bool", title: "Set a new base line", submitOnChange:true, defaultValue:false
+                input "setbaseline", "bool", title: "Set a new base line (also can be used to repair database)", submitOnChange:true, defaultValue:false
                 if(setbaseline)
                 {
-                    paragraph "<h3>This will overwrite your current database but it will keep what this app has learned since fist installation (you won't lose data)</h3>"
-                    input "baseline", "number", title: "enter a value between 1 and 108", range: "1..108"
-                    //input "valuestosave", "text", title: "Write down the temp values you don't want to delete", description: "separate each value with a comma", submitOnChange:true
-                    input "baseLineModes", "enum", title: "Set this baseline only for the following modes", options: baseMode.sort(), multiple:true, submitOnChange:true
-
-                    input "baseconfirm", "button", title: "confirm"
+                    paragraph "<h3>This will overwrite your current database but it will keep what this app has learned since first installation (you won't lose data)</h3>"                
                 }
+                input "baseline", "number", title: "enter a value between 1 and 108", range: "1..108"
+                //input "valuestosave", "text", title: "Write down the temp values you don't want to delete", description: "separate each value with a comma", submitOnChange:true
+                input "baseLineModes", "enum", title: "Set this baseline only for the following modes", options: baseMode.sort(), multiple:true, submitOnChange:true
+                input "baseconfirm", "button", title: "confirm"
             }
-
         }
+
         section()
         {
             if(state.installed)
@@ -144,11 +143,22 @@ def pageConfig() {
                 input "update", "button", title: "UPDATE"
                 input "testdataretrieve", "button", title: "TEST DATA RETRIEVAL"
 
+                state.confirm = true
+
                 if(state.confirm)
                 {
-                    def message = "CAREFULL! THIS WILL OVERWRITE ALL PREVIOUSLY LEARNED INPUTS!"
-                    descriptiontext message
-                    paragraph message
+
+                    if(state.valuestosave != null)
+                    {
+                        input "saveOldData", "bool", title: "Keep all data, reset only entries that were never modified", defaultValue:true,submitOnChange:true
+
+                        def message1 = "YOUR OLD DATA IS SAFE"
+                        def message2 ="<div style=\"width:102%;background-color:#1C2BB7;color:red;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">WARNING! YOU'RE ABOUT TO OVERWRITE ALL THIS APP HAS LEARNED OVER TIME!</div>" 
+                        def message = saveOldData ? message1 : message2
+                        paragraph message
+                        descriptiontext message
+                    }
+
                     input "confirm", "button", title:"confirm deletion"
                     input "cancel", "button", title:"cancel deletion"
                 }
@@ -206,7 +216,7 @@ def initialize(){
         state.lastMode = "heatingSetpoint"
     }
 
-    learning = false
+    state.learning = false
     state.lastEvent = 60000 
 
 
@@ -262,13 +272,15 @@ def appButtonHandler(btn) {
         case "resetdb":state.confirm = true
         break
         case "confirm":state.confirm = false
-        state.db = [:] // delete the old db
+        if(!saveOldData){
+            state.db = [:] // delete the old db
+        }
         runIn(1, createDb)
         break
         case "cancel":state.confirm = false
         break
         case "baseconfirm":
-        if(baseline) {setBaseLine()}
+        if(baseline) {setBaseLine(baseLineModes)}
         break
         case "showdata":
         state.showdata = true
@@ -286,7 +298,7 @@ def setPointHandler(evt){
 
     if(!state.paused )
     {       
-        descriptiontext "$evt.device $evt.name is now $evt.value eventFromApp = $eventFromApp elapsed time since last event: ${(now() - state.lastEvent)/1000} seconds"
+        descriptiontext "$evt.device $evt.name is now $evt.value state.eventFromApp = $state.eventFromApp elapsed time since last event: ${(now() - state.lastEvent)/1000} seconds"
         if(state.EnableDebugTime == "null" || state.EnableDebugTime == null){state.EnableDebugTime = now() }
 
         if((now() - state.EnableDebugTime) > 30*60*1000)
@@ -311,20 +323,18 @@ def setPointHandler(evt){
         if(switchrestriction && !swOn) {
             descriptiontext("not learning because $switchrestriction are all off")
         }
-        if(now() - state.lastEvent < 60000) {
+        if(now() - state.lastEvent < 10000) {
             ignoreMessage += """
 2 last events too close!"""
-            state.lastEvent = now() 
         }
         if(learning) {
             ignoreMessage += """
 App already busy learning")"""
-            state.lastEvent = now() 
         }
-        if(eventFromApp) {
+        /*if(eventFromApp) {
             ignoreMessage += """
 This event was triggered by this app"""
-        }
+        }*/
 
         state.lastEvent = now() 
         if(ignoreMessage != ""){
@@ -333,9 +343,9 @@ This event was triggered by this app"""
         else
         {
             state.lastEvent = now() 
-            learning = true
+            state.learning = true
             //// now learn from this new input
-            learn(evt.value) 
+            runIn(5, learn, [data:evt.value]) 
         }
     }
     state.lastEvent = now() 
@@ -362,7 +372,7 @@ def humidityHandler(evt){
 }
 def retrieve(){
 
-    if(!learning)
+    if(!state.learning)
     {
         checkConsistency() // check consistency
 
@@ -407,7 +417,8 @@ modified data mode = ${baseMode[a]} (shoud be identical to current location mode
         }
         if(!found)
         {
-            log.warn "[outsideTemp, humidity] : [$outsideTemp, $humidity] found NO MATCH! PLEASE FIX DATABASE..."
+            log.warn "[outsideTemp, humidity] : [$outsideTemp, $humidity] found NO MATCH! Attempting to repair the database for current mode.."
+            //setBaseLine(location.mode)
             return
         }
 
@@ -428,7 +439,7 @@ modified data mode = ${baseMode[a]} (shoud be identical to current location mode
         log.warn "APP IS CURRENTLY LEARNING, IGNORING REQUEST TO PREVENT DATA OVERFLOW"
     }
 }
-def setBaseLine(){
+def setBaseLine(baseLineModes){
     if(!state.valuestosave)
     {
         state.valuestosave = []
@@ -454,6 +465,7 @@ sa!=0 = ${sa!=0}
 """
 
     long start = now()
+    long start2 = now()
     long counter = now()
     long timer = 30000
 
@@ -478,7 +490,7 @@ sa!=0 = ${sa!=0}
 
                 if(skip)
                 {
-                    log.warn "value not replaced at user's request because ${ref} was found in ${state.valuestosave}"
+                    //log.warn "value not replaced at user's request because ${ref} was found in ${state.valuestosave}"
                 }
                 else 
                 {
@@ -486,15 +498,15 @@ sa!=0 = ${sa!=0}
                     dbX[i].remove(2)
                     dbX[i] += baseline
                 }
-                if(now() - start >= 500)
+                if(now() - start >= 2000)
                 {
-                    log.warn "Updating database... currently at index #$i within $a"
+                    log.warn "Updating database... currently at index #$i within $thisMode mode database"
                     start = now()
                 }
                 if(now() - counter >= timer)
                 {
                     log.warn "DATA UPDATE TIME OUT!"
-                    return
+                    break
                 }
                 state.db."${baseMode[a]}" = dbX
             }
@@ -507,54 +519,126 @@ sa!=0 = ${sa!=0}
     log.trace "BASE LINE SUCCESSFULY UPDATED!"
 }
 def createDb(){
-    descriptiontext "GENERATING NEW DATABASE... this may take some ressources for a little while..."
+
 
     int ms = baseMode.size()
     int m = 0
-    state.db = [:] // one DB per mode
+    long start = now()
+    long timer = 120000
+    long startDebug = 1000
+    long delay = now()
+    def bsln = baseline ? baseline : 75
 
-    for(ms != 0; m < ms; m++)
+    if(saveOldData)
+    {
+        log.info "REPAIRING DATABASE WITHOUT DELETING OLD VALUES"
+    }
+    else
+    {
+        log.info "CREATNG NEW DATABASE..."
+        state.db = [:] 
+    }
+
+    for(ms != 0; m < ms && !learning; m++) // location mode loop
     {
 
-        int h = 10 // minimum humidity value
-        int sh = 100-h // humidity goes from 10 to 100%
-        int i = -50 // minimum outside temp // If you think it can get below that... move to Venus...
-        int s = 120 + Math.abs(i) // max outside temp expected, beyond that... move to Mars... 
+        def dbX = []
 
-        def db = []
-        def insert = []
-        long start = now()
-        long timer = 30000
-        def bsln = baseline
-        if(!baseline)
-        {
-            bsln = 75
-        }
+        if(saveOldData)   //not creation of database here but overwrite instead
 
-        for(s!=0;i<s;i++)
         {
-            int a = 0
-            h = 10
-            for(sh!=0;a<s;a++) // all variations of humidity for every i (i being outside temp)
-            { // s is max size = 120+abs(i) don't put <sh here
-                if(h<100){h += 1}
-                insert = [i,h,bsln] // create [[outside, humidity, setpoint]]
-                db << insert
+            dbX = state.db.find{it.key == baseMode[m]}?.value
+            log.trace "redefining db with ${baseMode[m]} mode"
+
+            if(state.backupRepair == null) {log.warn "NO DATA TO COMPARE WITH !"; return}
+            def dbBackup = state.backupRepair.find{it.key == baseMode[m]}?.value // state.backupRepair = last time database was fully recreated
+
+
+            int s = dbX.size()
+            int i = 0
+            for(s != 0; i < s; i++) {
+
+                def ref = dbX[i][2]
+                def compare = dbX[i] // data that will be compared then, if needed, overwritten
+                def insert = dbBackup[i]
+                boolean skip = false
+                def valuestosave = state.valuestosave 
+                boolean baseLinePresentInValues = valuestosave.find{it == bsln.toString()} 
+                //log.debug "$bsln present in valuestosave = $baseLinePresentInValues"
+                if(baseLinePresentInValues)
+                {
+                    log.debug "deleting baseline reference $bsln redundancy from $valuestosave"
+                    def index = valuestosave.indexOf(bsln.toString())
+                    valuestosave.remove(index)
+                }               
+
+                skip = valuestosave.find{it == ref.toString()}                    
+                if(skip) // preserve previously learned values
+                {
+                    log.warn "value $ref not replaced in ${compare} at user's request"
+                }
+                else // if this is not to be saved, then just replace the value
+                {
+                    boolean identical = compare == insert
+                    if(identical)
+                    {
+                        //log.info "identical values"
+                    }
+                    else 
+                    {
+                        if(now() - startDebug > delay) {log.info "$compare becomes $insert"}
+                        dbX[i] = insert
+                    }
+                }
                 if(now() - start > timer)
                 {
                     log.warn "createDb() (inner loop) took more than $timer seconds to execute, BREAK"
                     return
                 }
             }
+        }
+        else   // depending on whether we want to save old data, or not, we apply a different writing method: replacement or increment         
+        {
+            int maxTemp = 120
+            int minTemp = -50 // minimum outside temp // If you think it can get below that... move to Venus...
+            int h = 10 // minimum humidity value
+            int i = minTemp 
+            int s = maxTemp + Math.abs(i) // total size of iterations to be covered from - 50 to 120
+
+
+            dbX = []
+            def insert = []
+            for(s!=0;i<s;i++)
+            {
+                int a = 0
+                h = 10
+                for(s!=0;(i <= maxTemp && a <= maxTemp);a++) // for each i (outside temp max = 120) we create all variations of humidity (max = 100)
+                { // s is max size = 120+abs(i) don't put <sh here
+                    h = h < 100 ? h + 1 : h 
+                    //log.info "$a --- $i"
+                    insert = [i,h,bsln] // create [[outsideTemp, humidity, setpoint]] i is the temp value, can be negative, that's why we don't use 'a' here
+
+                    //simple database increment, we're creating a fresh new db
+                    dbX << insert
+
+                    if(now() - start > timer)
+                    {
+                        log.warn "createDb() (inner loop) took more than $timer seconds to execute, BREAK"
+                        return
+                    }
+                }
+
+            }
             if(now() - start > timer)
             {
                 log.warn "createDb() (outer loop) took more than $timer seconds to execute, BREAK"
                 return
             }
-        }
 
-        def newIt = ["${baseMode[m]}" : db]
+        }
+        def newIt = ["${baseMode[m]}" : dbX]
         state.db << newIt
+        if(!saveOldData){state.backupRepair = state.db}// backup the db for upcoming comparisons 
         log.debug "DB for ${baseMode[m]} mode done...  "
     }
 
@@ -634,7 +718,6 @@ state.db.size() > baseMode.size() ? ${state.db?.size() > baseMode?.size()}
 }
 def learn(newSP){
 
-
     checkConsistency()
     if(!state.valuestosave) {state.valuestosave = []}
     log.trace "NOW LEARNING"
@@ -657,7 +740,7 @@ def learn(newSP){
     long safetyDelay = 60000
     long start = now() 
     long counter = now()
-    learning = false
+    state.learning = false
     def a = 0
     def sa = state.db.size() 
     def backup = state.db
@@ -666,7 +749,7 @@ def learn(newSP){
 
     for(sa!=0;a<sa;a++)
     {      
-        learning = true
+        state.learning = true
 
         def dbX = state.db.find{it.key == baseMode[a]}?.value
         if(baseMode[a] == location.mode)
@@ -683,15 +766,16 @@ def learn(newSP){
             /// outsideTemp amplitude loop
 
             for(f!=0;n<f;n++)
-            {          
-                def data1 = dbX.find{it[indices] == [outsideTemp + n, humidity]}; if(data1 && data1[2] != newSP){ index = dbX.indexOf(data1);dbdg(data1); dbX[index] = [outsideTemp + n, humidity, newSP]}
-                def data2 = dbX.find{it[indices] == [outsideTemp - n, humidity]}; if(data2 && data2[2] != newSP){ index = dbX.indexOf(data2);dbdg(data2);  dbX[index] = [outsideTemp - n, humidity, newSP]} 
-                def data3 = dbX.find{it[indices] == [outsideTemp + n, humidity + n]}; if(data3 && data3[2] != newSP){ index = dbX.indexOf(data3);dbdg(data3);  dbX[index] = [outsideTemp + n, humidity - n, newSP]}
-                def data4 = dbX.find{it[indices] == [outsideTemp - n, humidity - n]}; if(data4 && data4[2] != newSP){ index = dbX.indexOf(data4);dbdg(data4);  dbX[index] = [outsideTemp + n, humidity - n, newSP]}
-                def data5 = dbX.find{it[indices] == [outsideTemp - n, humidity + n]}; if(data3 && data3[2] != newSP){ index = dbX.indexOf(data3);dbdg(data5);  dbX[index] = [outsideTemp + n, humidity - n, newSP]}
-                def data6 = dbX.find{it[indices] == [outsideTemp + n, humidity - n]}; if(data4 && data4[2] != newSP){ index = dbX.indexOf(data4);dbdg(data6);  dbX[index] = [outsideTemp + n, humidity - n, newSP]}           
-                def data7 = dbX.find{it[indices] == [outsideTemp, humidity - n]}; if(data7 && data7[2] != newSP){ index = dbX.indexOf(data7);dbdg(data7);  dbX[index] = [outsideTemp, humidity - n, newSP]}           
-                def data8 = dbX.find{it[indices] == [outsideTemp, humidity + n]}; if(data8 && data8[2] != newSP){ index = dbX.indexOf(data8);dbdg(data8);  dbX[index] = [outsideTemp, humidity + n, newSP]}           
+            {  
+                def replace = []
+                defdata1=dbX.find{it[indices]==[outsideTemp+n,humidity]};  if(data1&&data1[2]!=newSP){replace=[outsideTemp+n,humidity,newSP];  index=dbX.indexOf(data1,replace);dbdg(data1);dbX[index]=replace}
+                defdata2=dbX.find{it[indices]==[outsideTemp-n,humidity]};  if(data2&&data2[2]!=newSP){replace=[outsideTemp-n,humidity,newSP];  index=dbX.indexOf(data2,replace);dbdg(data2);dbX[index]=replace}
+                defdata7=dbX.find{it[indices]==[outsideTemp,humidity-n]};  if(data7&&data7[2]!=newSP){replace=[outsideTemp,humidity-n,newSP];  index=dbX.indexOf(data7);dbdg(data7,replace);dbX[index]=replace}
+                defdata8=dbX.find{it[indices]==[outsideTemp,humidity+n]};  if(data8&&data8[2]!=newSP){replace=[outsideTemp,humidity+n,newSP];  index=dbX.indexOf(data8);dbdg(data8,replace);dbX[index]=replace}
+                defdata3=dbX.find{it[indices]==[outsideTemp+n,humidity+n]};if(data3&&data3[2]!=newSP){replace=[outsideTemp+n,humidity+n,newSP];index=dbX.indexOf(data3,replace);dbdg(data3);dbX[index]=replace}
+                defdata4=dbX.find{it[indices]==[outsideTemp-n,humidity-n]};if(data4&&data4[2]!=newSP){replace=[outsideTemp+n,humidity-n,newSP];index=dbX.indexOf(data4,replace);dbdg(data4);dbX[index]=replace}
+                defdata5=dbX.find{it[indices]==[outsideTemp-n,humidity+n]};if(data3&&data3[2]!=newSP){replace=[outsideTemp+n,humidity+n,newSP];index=dbX.indexOf(data3,replace);dbdg(data5);dbX[index]=replace}
+                defdata6=dbX.find{it[indices]==[outsideTemp+n,humidity-n]};if(data4&&data4[2]!=newSP){replace=[outsideTemp+n,humidity-n,newSP];index=dbX.indexOf(data4,replace);dbdg(data6);dbX[index]=replace}
 
                 if(now() - counter > 10000)
                 {
@@ -713,12 +797,11 @@ def learn(newSP){
         }
     }
     state.lastLearnFailed = false
-    learning = false
+    state.learning = false
 
     descriptiontext "LEARNING SUCCESSFUL! The operation took ${(now() - start)/1000} seconds)"
 }
-def dbdg(data)
-{
+def dbdg(data){
     log.debug "updating $data"   
 }
 def logging(message){
